@@ -1,0 +1,22 @@
+& "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.9_3.9.3568.0_x64__qbz5n2kfra8p0\python3.9.exe" -m venv .venv                        
+.venv\Scripts\activate  
+
+curiousscanner/
+├── app.py                ← Streamlit app
+├── utils.py              ← Core logic
+├── corrections_log.json  ← Stores corrections
+└── sample_id_card.jpg    ← (Optional sample image)
+
+
+pip install streamlit opencv-python pytesseract pillow
+streamlit run app.py
+
+
+curiousscanner/
+├── app.py
+├── utils.py
+├── corrections_log.json
+├── generate_spacy_data.py   ← [STEP 1]
+├── config.cfg               ← [STEP 2]
+├── training_data.spacy      ← [STEP 1 Output]
+├── ner_model/               ← [STEP 3 Output]
