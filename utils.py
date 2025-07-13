@@ -11,9 +11,15 @@ CORRECTION_LOG = "corrections_log.json"
 NER_MODEL_PATH = "ner_model/model-best"
 
 @st.cache_resource
+@st.cache_resource(show_spinner="🔁 Loading NER model...")
 def get_nlp():
+    model_path = "ner_model/model-best"
     try:
-        return spacy.load(NER_MODEL_PATH)
+        # Force reload model if it exists
+        if os.path.exists(model_path):
+            return spacy.load(model_path)
+        else:
+            raise FileNotFoundError("Model not found at ner_model/model-best")
     except Exception as e:
         st.warning(f"⚠️ Failed to load NER model: {e}")
         return None
@@ -35,22 +41,15 @@ def parse_fields(text):
     lines = [line.strip() for line in text.split('\n') if line.strip()]
 
     for line in lines:
-        if "ramu" in line.lower():
-            info['Name'] = line.title()
+        # Generic key-value match (like "Employee Code: E009" or "Contact No - 9876543210")
+        kv_match = re.match(r"(.+?)\s*[:\-]\s*(.+)", line)
+        if kv_match:
+            key = kv_match.group(1).strip().title()
+            value = kv_match.group(2).strip()
+            info[key] = value
+            continue
 
-        if "admin" in line.lower() and ':' in line:
-            info['Admin No'] = line.split(":")[-1].strip()
-
-        if "branch" in line.lower():
-            info['Branch'] = line.split(":")[-1].strip()
-        elif line.strip().startswith(": CSE"):
-            info['Branch'] = "CSE"
-
-        if "contact" in line.lower() or "etNo" in line:
-            digits = re.findall(r'\d{10}', line)
-            if digits:
-                info['Contact No'] = digits[0]
-
+        # Special cases for known patterns (like DOB or Aadhaar-style ID)
         dob_match = re.search(r'(\d{2}[/-]\d{2}[/-]\d{4})', line)
         if dob_match:
             info['DOB'] = dob_match.group(1)
@@ -61,6 +60,15 @@ def parse_fields(text):
             formatted_id = ' '.join([raw_id[i:i+4] for i in range(0, 12, 4)])
             info['ID'] = formatted_id
 
+        # Fallback: if the line looks like a name (capitalized and not too long)
+        if line.replace(" ", "").isalpha() and 3 <= len(line.split()) <= 3:
+            if 'Name' not in info:
+                info['Name'] = line.title()
+
+    # Print debug output
+    for k, v in info.items():
+        st.write(f"Detected: {k} → {v}")
+
     return info
 
 def parse_with_spacy(text):
@@ -70,6 +78,10 @@ def parse_with_spacy(text):
         return result
 
     doc = nlp(text)
+    if not doc.ents:
+        st.warning("⚠️ NER model found no entities.")
+        return result
+
     for ent in doc.ents:
         label = ent.label_.title().replace("_", " ")
         value = ent.text.strip()

@@ -21,7 +21,7 @@ def generate_training_data():
     with open(INPUT_FILE, "r", encoding="utf-8") as f:
         logs = json.load(f)
 
-    LABEL_MAP = get_dynamic_label_map(logs)
+    label_map = get_dynamic_label_map(logs)
 
     for entry in logs:
         text = entry["ocr_text"]
@@ -31,43 +31,39 @@ def generate_training_data():
         print(f"\n[ENTRY] OCR Text:\n{text.strip()}")
 
         for label, value in corrected.items():
-            clean_label = LABEL_MAP.get(label, label.upper().replace(" ", "_"))
+            label_upper = label_map[label]
 
-            if label.upper() == "ID":
-                id_clean = re.sub(r"\D", "", value)
-                found = False
-
-                normalized_text = re.sub(r"[\n\r]", " ", text)
-
-                for match in re.finditer(r'\d{4}[\s\-]?\d{4}[\s\-]?\d{4}', normalized_text):
-                    candidate = match.group(0)
-                    candidate_clean = re.sub(r"\D", "", candidate)
-                    if candidate_clean == id_clean:
-                        start = text.find(candidate)
-                        if start != -1:
-                            end = start + len(candidate)
-                            print(f"[MATCH] ID → '{candidate}' ({start}-{end})")
-                            entities.append((start, end, clean_label))
-                            found = True
-                            break
-                if not found:
-                    print(f"[MISS] ID '{value}' not found in OCR text.")
+            # Match ID number formats (e.g., Aadhaar-style 12-digit)
+            # if label.upper() == "ID":
+            #     id_clean = re.sub(r"\D", "", value)
+            #     found = False
+            #     for match in re.finditer(r'\d{4}[\s\-]?\d{4}[\s\-]?\d{4}', text):
+            #         candidate = match.group(0)
+            #         candidate_clean = re.sub(r"\D", "", candidate)
+            #         if candidate_clean == id_clean:
+            #             start, end = match.span()
+            #             entities.append((start, end, label_upper))
+            #             print(f"[MATCH] ID → {candidate} ({start}-{end})")
+            #             found = True
+            #             break
+            #     if not found:
+            #         print(f"[MISS] ID '{value}' not found.")
+            # else:
+            match = re.search(re.escape(value), text, re.IGNORECASE)
+            if match:
+                start, end = match.start(), match.end()
+                print(f"[MATCH] {label} : '{value}' ({start}-{end})")
+                entities.append((start, end, label_upper))
             else:
-                match = re.search(re.escape(value), text, re.IGNORECASE)
-                if match:
-                    start, end = match.start(), match.end()
-                    print(f"[MATCH] {label} → '{value}' ({start}-{end})")
-                    entities.append((start, end, clean_label))
-                else:
-                    print(f"[MISS] {label} '{value}' not found in OCR text.")
+                print(f"[MISS] {label} '{value}' not found in OCR text.")
 
         doc = nlp.make_doc(text)
         spans = []
         for start, end, label in entities:
-            span = doc.char_span(start, end, label=label, alignment_mode="contract") \
-                or doc.char_span(start, end, label=label, alignment_mode="expand")
+            span = doc.char_span(start, end, label=label, alignment_mode="contract") or \
+                   doc.char_span(start, end, label=label, alignment_mode="expand")
             if not span:
-                print(f"[WARN] Failed to align span: '{text[start:end]}' for label={label}")
+                print(f"[WARN] Could not align span for: '{text[start:end]}' ({label})")
             else:
                 spans.append(span)
 
@@ -75,7 +71,7 @@ def generate_training_data():
         db.add(doc)
 
     db.to_disk(OUTPUT_FILE)
-    print(f"\n[ok] Saved training data to {OUTPUT_FILE}")
+    print(f"\n[ok] Saved training data to '{OUTPUT_FILE}' with {len(logs)} documents.")
 
 if __name__ == "__main__":
     generate_training_data()
