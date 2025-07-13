@@ -1,20 +1,12 @@
 [
   {
     "timestamp": "2025-07-13T10:30:29.631656",
-    "ocr_text": "JOHN DOE\nDOB: 15/08/1995\n\n1234 5678 9012\n\n",
+    "ocr_text": "IDENTITY CARD\n\nGARKINI RAMU\n\nadminNo : 322136410122\n\n: CSE\netNo: 9182963427",
     "corrected_fields": {
-      "Name": "JOHN DOE",
-      "DOB": "15/08/1995",
-      "ID": "1234 5678 9012"
-    }
-  },
-  {
-    "timestamp": "2025-07-13T10:55:55.486809",
-    "ocr_text": "ANDREW SMITH\nDOB: 03/11/1987\n\n9876 5432 1098\n\n",
-    "corrected_fields": {
-      "Name": "ANDREW SMITH",
-      "DOB": "03/11/1987",
-      "ID": "9876 5432 1098"
+      "Name": "GARKINI RAMU",
+      "Admin No": "322136410122",
+      "Branch": "CSE",
+      "Contact No": "9182963427"
     }
   }
 ]

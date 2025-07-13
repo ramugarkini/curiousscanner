@@ -9,75 +9,79 @@ from utils import (
     parse_with_spacy,
     save_correction,
 )
+import subprocess
+import sys
 
 st.set_page_config(page_title="CuriousScanner", layout="centered")
 
 st.title("🤖 CuriousScanner")
-st.markdown("Upload a **college ID card photo**, and I’ll extract the details dynamically!")
+st.markdown("Upload or capture a **college ID card**, and I’ll extract the details dynamically!")
 
-# File uploader
-uploaded_file = st.file_uploader("Upload ID Card Image", type=["jpg", "jpeg", "png"])
+# File uploader or camera input
+uploaded_file = st.file_uploader("📂 Upload ID Card Image", type=["jpg", "jpeg", "png"])
+if not uploaded_file:
+    uploaded_file = st.camera_input("📸 Or capture ID card using webcam")
 
-# Mode toggle: AI vs Regex
+# Parsing mode selection
 mode = st.radio("🧠 Choose Parsing Mode", ["AI-powered (NER)", "Regex (Classic)"], horizontal=True)
 
 if uploaded_file:
-    # Safe image load and conversion
+    # Load and convert image
     image = Image.open(uploaded_file).convert("RGB")
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
     # Show image
-    st.image(uploaded_file, caption="Uploaded ID Card", use_container_width=True)
+    st.image(uploaded_file, caption="ID Card", use_container_width=True)
 
-    # OCR processing
+    # OCR and preprocessing
     st.info("🔍 Processing image...")
-    processed_img = preprocess_image(img_cv, use_adaptive=False)
+    use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
+    processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
+
     text = extract_text(processed_img)
+    st.text(f"[DEBUG] OCR text length: {len(text)}")
 
     if text.strip():
         st.text_area("📜 OCR Text Output", text, height=150)
     else:
-        st.warning("⚠️ OCR failed. Try a clearer image or toggle preprocessing settings.")
+        st.warning("⚠️ OCR failed. Try again with better lighting or focus.")
 
-    # Use selected parsing mode
+    # Choose parsing method
     if mode == "AI-powered (NER)":
         fields = parse_with_spacy(text)
     else:
         fields = parse_fields(text)
 
+    # Dynamic field input
     st.subheader("✏️ Verify & Correct Extracted Fields")
-    name = st.text_input("Name", fields.get("Name", ""))
-    dob = st.text_input("Date of Birth", fields.get("DOB", ""))
-    id_number = st.text_input("ID", fields.get("ID", ""))
+    corrected = {}
+    for key, value in fields.items():
+        corrected[key] = st.text_input(key, value)
 
     if st.button("✅ Save Correction"):
-        corrected = {"Name": name, "DOB": dob, "ID": id_number}
         save_correction(text, corrected)
-        st.success("✅ Saved successfully to corrections_log.json!")
+        st.success("✅ Correction saved to `corrections_log.json`!")
 
     st.markdown("---")
-    st.caption("📚 This demo improves over time with your feedback. CuriousScanner learns from you!")
+    st.caption("📚 This scanner improves the more you use it. Feedback = better AI.")
 
-import subprocess
-import sys
-
+# Retraining block
 st.markdown("---")
 st.subheader("🔁 Retrain NER Model")
-st.write("Click the button below to regenerate training data and retrain the NER model based on saved corrections.")
+st.write("Click the button below to regenerate training data and retrain the AI model based on saved corrections.")
 
 if st.button("🚀 Retrain Now"):
-    python_path = sys.executable  # dynamically use current Python path
+    python_path = sys.executable  # Use current Python interpreter
 
-    with st.spinner("Generating training data..."):
+    with st.spinner("🔧 Generating training data..."):
         result1 = subprocess.run([python_path, "generate_spacy_data.py"], capture_output=True, text=True)
         st.code(result1.stdout or result1.stderr)
 
-    with st.spinner("Training spaCy model..."):
+    with st.spinner("🧠 Training NER model..."):
         result2 = subprocess.run(
             [python_path, "-m", "spacy", "train", "config.cfg", "--output", "ner_model"],
             capture_output=True, text=True
         )
         st.code(result2.stdout or result2.stderr)
 
-    st.success("✅ Retraining complete! Please **refresh** the app to load the new model.")
-
+    st.success("✅ Retraining complete! Please refresh the app to load the new model.")

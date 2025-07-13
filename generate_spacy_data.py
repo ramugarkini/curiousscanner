@@ -6,11 +6,13 @@ from spacy.tokens import DocBin
 INPUT_FILE = "corrections_log.json"
 OUTPUT_FILE = "training_data.spacy"
 
-LABEL_MAP = {
-    "Name": "NAME",
-    "DOB": "DOB",
-    "ID": "ID"
-}
+def get_dynamic_label_map(logs):
+    label_map = {}
+    for entry in logs:
+        for field in entry.get("corrected_fields", {}):
+            if field not in label_map:
+                label_map[field] = field.upper().replace(" ", "_")
+    return label_map
 
 def generate_training_data():
     nlp = spacy.blank("en")
@@ -18,6 +20,8 @@ def generate_training_data():
 
     with open(INPUT_FILE, "r", encoding="utf-8") as f:
         logs = json.load(f)
+
+    LABEL_MAP = get_dynamic_label_map(logs)
 
     for entry in logs:
         text = entry["ocr_text"]
@@ -29,18 +33,16 @@ def generate_training_data():
         for label, value in corrected.items():
             clean_label = LABEL_MAP.get(label, label.upper().replace(" ", "_"))
 
-            if label == "ID":
+            if label.upper() == "ID":
                 id_clean = re.sub(r"\D", "", value)
                 found = False
 
-                # Clean text for matching: collapse all whitespace/newlines to space
                 normalized_text = re.sub(r"[\n\r]", " ", text)
 
                 for match in re.finditer(r'\d{4}[\s\-]?\d{4}[\s\-]?\d{4}', normalized_text):
                     candidate = match.group(0)
                     candidate_clean = re.sub(r"\D", "", candidate)
                     if candidate_clean == id_clean:
-                        # Map back to original text index
                         start = text.find(candidate)
                         if start != -1:
                             end = start + len(candidate)
@@ -50,8 +52,6 @@ def generate_training_data():
                             break
                 if not found:
                     print(f"[MISS] ID '{value}' not found in OCR text.")
-
-
             else:
                 match = re.search(re.escape(value), text, re.IGNORECASE)
                 if match:

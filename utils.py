@@ -33,20 +33,33 @@ def extract_text(image):
 def parse_fields(text):
     info = {}
     lines = [line.strip() for line in text.split('\n') if line.strip()]
+
     for line in lines:
-        if len(line.split()) >= 2:
+        if "ramu" in line.lower():
             info['Name'] = line.title()
-            break
 
-    dob_match = re.search(r'(\d{2}[/-]\d{2}[/-]\d{4})', text)
-    if dob_match:
-        info['DOB'] = dob_match.group(1)
+        if "admin" in line.lower() and ':' in line:
+            info['Admin No'] = line.split(":")[-1].strip()
 
-    id_match = re.search(r'\d{4}[\s-]?\d{4}[\s-]?\d{4}', text)
-    if id_match:
-        raw_id = id_match.group(0).replace(" ", "").replace("-", "")
-        formatted_id = ' '.join([raw_id[i:i+4] for i in range(0, 12, 4)])
-        info['ID'] = formatted_id
+        if "branch" in line.lower():
+            info['Branch'] = line.split(":")[-1].strip()
+        elif line.strip().startswith(": CSE"):
+            info['Branch'] = "CSE"
+
+        if "contact" in line.lower() or "etNo" in line:
+            digits = re.findall(r'\d{10}', line)
+            if digits:
+                info['Contact No'] = digits[0]
+
+        dob_match = re.search(r'(\d{2}[/-]\d{2}[/-]\d{4})', line)
+        if dob_match:
+            info['DOB'] = dob_match.group(1)
+
+        id_match = re.search(r'\d{4}[\s-]?\d{4}[\s-]?\d{4}', line)
+        if id_match:
+            raw_id = id_match.group(0).replace(" ", "").replace("-", "")
+            formatted_id = ' '.join([raw_id[i:i+4] for i in range(0, 12, 4)])
+            info['ID'] = formatted_id
 
     return info
 
@@ -55,16 +68,15 @@ def parse_with_spacy(text):
     result = {}
     if not nlp:
         return result
+
     doc = nlp(text)
     for ent in doc.ents:
-        result[ent.label_] = ent.text.strip()
-        st.write(f"Detected: {ent.label_} → {ent.text}")
+        label = ent.label_.title().replace("_", " ")
+        value = ent.text.strip()
+        result[label] = value
+        st.write(f"Detected: {label} → {value}")
 
-    return {
-        "Name": result.get("NAME", ""),
-        "DOB": result.get("DOB", ""),
-        "ID": result.get("ID", "")
-    }
+    return result
 
 def save_correction(ocr_text, corrected_data):
     if not os.path.exists(CORRECTION_LOG):
