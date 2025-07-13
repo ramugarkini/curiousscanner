@@ -1,3 +1,4 @@
+import sqlite3
 import json
 import re
 import spacy
@@ -6,8 +7,42 @@ import sys
 from spacy.tokens import DocBin
 from spacy.cli.train import train
 
-INPUT_FILE = "corrections_log.json"
+DB_FILE = "corrections.db"
 NER_MODEL_BASE = "ner_model"
+
+def fetch_logs(doc_type=None, latest_only=False):
+    if not os.path.exists(DB_FILE):
+        print(f"[warn] Database file '{DB_FILE}' not found.")
+        return []
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    query = "SELECT doc_type, ocr_text, corrected_fields FROM corrections"
+    params = ()
+    if doc_type:
+        query += " WHERE doc_type = ?"
+        params = (doc_type,)
+
+    if latest_only:
+        query += " ORDER BY id DESC LIMIT 1"
+
+    rows = cursor.execute(query, params).fetchall()
+    conn.close()
+
+    logs = []
+    for dt, text, corrected_json in rows:
+        try:
+            corrected = json.loads(corrected_json)
+            logs.append({
+                "doc_type": dt,
+                "ocr_text": text,
+                "corrected_fields": corrected
+            })
+        except:
+            continue
+
+    return logs
 
 def get_dynamic_label_map(logs):
     label_map = {}
@@ -18,18 +53,13 @@ def get_dynamic_label_map(logs):
     return label_map
 
 def generate_training_data_for_type(doc_type):
-    nlp = spacy.blank("en")
-    db = DocBin()
-
-    with open(INPUT_FILE, "r", encoding="utf-8") as f:
-        logs = json.load(f)
-
-    logs = [entry for entry in logs if entry.get("doc_type") == doc_type]
-
+    logs = fetch_logs(doc_type=doc_type)
     if not logs:
         print(f"[warn] No logs found for type: {doc_type}")
         return
 
+    nlp = spacy.blank("en")
+    db = DocBin()
     label_map = get_dynamic_label_map(logs)
 
     for entry in logs:
@@ -62,13 +92,11 @@ def generate_training_data_for_type(doc_type):
     print(f"[ok] Saved training data: {out_file}")
 
 def auto_train_models():
-    doc_types = set()
-
-    with open(INPUT_FILE, "r", encoding="utf-8") as f:
-        logs = json.load(f)
-        for entry in logs:
-            if "doc_type" in entry:
-                doc_types.add(entry["doc_type"])
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT doc_type FROM corrections")
+    doc_types = [row[0] for row in cursor.fetchall()]
+    conn.close()
 
     for doc_type in doc_types:
         print(f"\n🔁 Generating training data for '{doc_type}'...")
@@ -87,19 +115,13 @@ def auto_train_models():
         else:
             print(f"[fail] Training failed for: {doc_type}")
 
-
 def generate_training_data_latest():
-    nlp = spacy.blank("en")
-    db = DocBin()
-
-    with open(INPUT_FILE, "r", encoding="utf-8") as f:
-        logs = json.load(f)
-
+    logs = fetch_logs(latest_only=True)
     if not logs:
         print("[warn] No entries found.")
         return None, None
 
-    latest = logs[-1]
+    latest = logs[0]
     doc_type = latest.get("doc_type", "unknown")
     label_map = get_dynamic_label_map([latest])
 
@@ -114,6 +136,8 @@ def generate_training_data_latest():
             start, end = match.span()
             entities.append((start, end, label_upper))
 
+    nlp = spacy.blank("en")
+    db = DocBin()
     doc = nlp.make_doc(text)
     spans = []
     for start, end, label in entities:
@@ -130,7 +154,6 @@ def generate_training_data_latest():
     print(f"[ok] Saved latest-only training file: {out_file}")
     return out_file, doc_type
 
-
 if __name__ == "__main__":
     out_file, doc_type = generate_training_data_latest()
     if out_file and doc_type:
@@ -142,4 +165,3 @@ if __name__ == "__main__":
         )
         if result == 0:
             print(f"[ok] Latest model trained and saved to {output_dir}")
-

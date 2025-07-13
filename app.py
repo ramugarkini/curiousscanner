@@ -5,6 +5,7 @@ import spacy
 import subprocess
 import sys
 import os
+import sqlite3
 import json
 
 from PIL import Image
@@ -19,6 +20,7 @@ from utils import (
 )
 from document_classifier import predict_doc_type
 
+DB_FILE = "corrections.db"
 
 st.set_page_config(page_title="CuriousScanner", layout="centered")
 
@@ -42,7 +44,7 @@ if uploaded_file:
     st.image(uploaded_file, caption="ID Card", use_container_width=True)
 
     # OCR and preprocessing
-    st.info("🔍 Processing image...")
+    # st.info("🔍 Processing image...")
     use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
     processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
 
@@ -58,7 +60,6 @@ if uploaded_file:
 
     # Choose parsing method
     if mode == "AI-powered (NER)":
-        # Optional: use different NER models per doc type
         doc_model_map = {
             "student": "ner_model/student",
             "employee": "ner_model/employee",
@@ -74,7 +75,6 @@ if uploaded_file:
     else:
         fields = parse_fields(text)
 
-
     # Session state for custom field additions
     if "custom_fields" not in st.session_state:
         st.session_state.custom_fields = []
@@ -89,7 +89,7 @@ if uploaded_file:
     # ➕ Add custom fields
     st.markdown("#### ➕ Add Custom Field")
     with st.form("add_field_form", clear_on_submit=True):
-        col1, col2, col3 = st.columns([4, 4, 2])  # Adjust width ratio as needed
+        col1, col2, col3 = st.columns([4, 4, 2])
         new_key = col1.text_input("Field Name", key="new_key")
         new_value = col2.text_input("Field Value", key="new_value")
         col3.markdown(" ")
@@ -99,10 +99,7 @@ if uploaded_file:
         if add_btn and new_key:
             st.session_state.custom_fields.append((new_key, new_value))
 
-
-
-    st.markdown("#### 📝 Custom Fields")
-
+    # st.markdown("#### 📝 Custom Fields")
     delete_indices = []
     for i, (key, value) in enumerate(st.session_state.custom_fields):
         cols = st.columns([3, 3, 1])
@@ -119,36 +116,18 @@ if uploaded_file:
     for i in sorted(delete_indices, reverse=True):
         del st.session_state.custom_fields[i]
 
-    # if st.button("🧹 Clear Custom Fields"):
-    #     st.session_state.custom_fields = []
-
     if st.button("✅ Save Correction"):
-        # Save user-corrected data and compute reward
         save_correction(text, corrected, predicted_data=fields, doc_type=doc_type)
-        st.success("✅ Correction saved to `corrections_log.json`!")
+        # st.success("✅ Correction saved to SQLite!")
 
-        # Online update (self-learning)
         nlp = spacy.load(model_dir) if os.path.exists(model_dir) else None
         if nlp:
-            losses = update_model_on_correction(nlp, text, corrected)  # first apply correction
-            nlp.to_disk(model_dir)  # then save the updated model
+            losses = update_model_on_correction(nlp, text, corrected)
+            nlp.to_disk(model_dir)
             st.success(f"📁 Model updated and saved to {model_dir}")
             st.info(f"🤖 Model updated with correction. Losses: {losses}")
         else:
             st.warning("⚠️ Model not loaded. Skipped online update.")
-
-
-
-        # Show latest saved correction
-        # if os.path.exists("corrections_log.json"):
-        #     with open("corrections_log.json", "r", encoding="utf-8") as f:
-        #         corrections = json.load(f)
-        #         if corrections:
-        #             latest = corrections[-1]
-        #             st.markdown("#### 📝 Last Saved OCR Text")
-        #             st.code(latest["ocr_text"], language="text")
-        #             st.markdown("#### ✅ Last Saved Fields")
-        #             st.json(latest["corrected_fields"])
 
     st.markdown("---")
     st.caption("📚 This scanner improves the more you use it. Feedback = better AI.")
@@ -160,7 +139,6 @@ st.write("Click the button below to regenerate training data and retrain the AI 
 
 if st.button("🚀 Retrain Now"):
     python_path = sys.executable
-
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
 
@@ -179,30 +157,27 @@ if st.button("🚀 Retrain Now"):
             else:
                 st.code(result.stdout)
 
+    get_nlp.clear()
 
-    get_nlp.clear()  # ✅ Reload new model
+    # ✅ Show latest correction info used in training (from SQLite)
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT ocr_text, corrected_fields, reward FROM corrections ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        conn.close()
 
+        if row:
+            ocr_text, corrected_json, reward = row
+            with st.expander("📘 Last Used Correction Data"):
+                st.markdown("**📝 OCR Text Used for Training**")
+                st.code(ocr_text, language="text")
+                st.markdown("**✅ Corrected Fields Used for Training**")
+                st.json(json.loads(corrected_json))
 
-    # ✅ Show latest correction info used in training
-    if os.path.exists("corrections_log.json"):
-        with open("corrections_log.json", "r", encoding="utf-8") as f:
-            corrections = json.load(f)
-            if corrections:
-                latest = corrections[-1]
-                with st.expander("📘 Last Used Correction Data"):
-                    st.markdown("**📝 OCR Text Used for Training**")
-                    st.code(latest["ocr_text"], language="text")
-
-                    st.markdown("**✅ Corrected Fields Used for Training**")
-                    st.json(latest["corrected_fields"])
-
-    # ✅ Show last reward only
-    if os.path.exists("corrections_log.json"):
-        with open("corrections_log.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if data:
-                last_reward = data[-1].get("reward", 0)
-                st.subheader("🎯 Last Correction Reward")
-                st.metric(label="Reward", value=f"{last_reward:.1f}")
+            st.subheader("🎯 Last Correction Reward")
+            st.metric(label="Reward", value=f"{reward:.1f}")
+    except Exception as e:
+        st.warning(f"⚠️ Failed to fetch correction from DB: {e}")
 
     st.success("✅ Retraining complete! Please refresh the app to load the new model.")
