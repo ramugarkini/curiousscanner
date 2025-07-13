@@ -6,20 +6,17 @@ import os
 from datetime import datetime
 import spacy
 import streamlit as st
+from spacy.training.example import Example
+
 
 CORRECTION_LOG = "corrections_log.json"
 NER_MODEL_PATH = "ner_model/model-best"
 
 @st.cache_resource
 @st.cache_resource(show_spinner="🔁 Loading NER model...")
-def get_nlp():
-    model_path = "ner_model/model-best"
+def get_nlp(model_path="ner_model/model-best"):
     try:
-        # Force reload model if it exists
-        if os.path.exists(model_path):
-            return spacy.load(model_path)
-        else:
-            raise FileNotFoundError("Model not found at ner_model/model-best")
+        return spacy.load(model_path)
     except Exception as e:
         st.warning(f"⚠️ Failed to load NER model: {e}")
         return None
@@ -71,8 +68,13 @@ def parse_fields(text):
 
     return info
 
-def parse_with_spacy(text):
-    nlp = get_nlp()
+def parse_with_spacy(text, model_path="ner_model/model-best"):
+    try:
+        nlp = spacy.load(model_path)
+    except:
+        st.warning("⚠️ Failed to load NER model for document type.")
+        return {}
+
     result = {}
     if not nlp:
         return result
@@ -90,7 +92,7 @@ def parse_with_spacy(text):
 
     return result
 
-def save_correction(ocr_text, corrected_data):
+def save_correction(ocr_text, corrected_data, predicted_data=None, doc_type=None):
     if not os.path.exists(CORRECTION_LOG):
         with open(CORRECTION_LOG, "w") as f:
             json.dump([], f)
@@ -102,10 +104,16 @@ def save_correction(ocr_text, corrected_data):
             except json.JSONDecodeError:
                 data = []
 
+            reward = compute_reward(predicted_data or {}, corrected_data)
+
+
             data.append({
                 "timestamp": datetime.now().isoformat(),
+                "doc_type": doc_type,
                 "ocr_text": ocr_text,
-                "corrected_fields": corrected_data
+                "predicted_fields": predicted_data,
+                "corrected_fields": corrected_data,
+                "reward": reward
             })
 
             f.seek(0)
@@ -113,3 +121,41 @@ def save_correction(ocr_text, corrected_data):
             json.dump(data, f, indent=2)
     except Exception as e:
         st.error(f"[ERROR] Failed to save correction: {e}")
+
+
+def compute_reward(predicted, corrected):
+    reward = 0
+    total = len(corrected)
+
+    # Normalize predicted keys: lowercase -> original key map
+    normalized_predicted = {k.strip().lower(): v.strip().lower() for k, v in predicted.items()}
+
+    for key, value in corrected.items():
+        norm_key = key.strip().lower()
+        norm_val = value.strip().lower()
+
+        pred_val = normalized_predicted.get(norm_key)
+
+        if pred_val and pred_val == norm_val:
+            reward += 1
+
+    return reward / total if total > 0 else 0
+
+
+def update_model_on_correction(nlp, ocr_text, corrected):
+    from spacy.training.example import Example
+
+    doc = nlp.make_doc(ocr_text)
+    entities = []
+
+    for label, value in corrected.items():
+        match = re.search(re.escape(value), ocr_text, re.IGNORECASE)
+        if match:
+            start, end = match.span()
+            entities.append((start, end, label.upper()))
+
+    example = Example.from_dict(doc, {"entities": entities})
+    optimizer = nlp.resume_training()
+    losses = {}
+    nlp.update([example], sgd=optimizer, losses=losses)
+    return losses

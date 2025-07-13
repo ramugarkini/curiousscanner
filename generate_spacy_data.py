@@ -1,10 +1,13 @@
 import json
 import re
 import spacy
+import os
+import sys
 from spacy.tokens import DocBin
+from spacy.cli.train import train
 
 INPUT_FILE = "corrections_log.json"
-OUTPUT_FILE = "training_data.spacy"
+NER_MODEL_BASE = "ner_model"
 
 def get_dynamic_label_map(logs):
     label_map = {}
@@ -14,12 +17,18 @@ def get_dynamic_label_map(logs):
                 label_map[field] = field.upper().replace(" ", "_")
     return label_map
 
-def generate_training_data():
+def generate_training_data_for_type(doc_type):
     nlp = spacy.blank("en")
     db = DocBin()
 
     with open(INPUT_FILE, "r", encoding="utf-8") as f:
         logs = json.load(f)
+
+    logs = [entry for entry in logs if entry.get("doc_type") == doc_type]
+
+    if not logs:
+        print(f"[warn] No logs found for type: {doc_type}")
+        return
 
     label_map = get_dynamic_label_map(logs)
 
@@ -28,31 +37,11 @@ def generate_training_data():
         corrected = entry["corrected_fields"]
         entities = []
 
-        print(f"\n[ENTRY] OCR Text:\n{text.strip()}")
-
         for label, value in corrected.items():
             label_upper = label_map[label]
-
-            # Match ID number formats (e.g., Aadhaar-style 12-digit)
-            # if label.upper() == "ID":
-            #     id_clean = re.sub(r"\D", "", value)
-            #     found = False
-            #     for match in re.finditer(r'\d{4}[\s\-]?\d{4}[\s\-]?\d{4}', text):
-            #         candidate = match.group(0)
-            #         candidate_clean = re.sub(r"\D", "", candidate)
-            #         if candidate_clean == id_clean:
-            #             start, end = match.span()
-            #             entities.append((start, end, label_upper))
-            #             print(f"[MATCH] ID → {candidate} ({start}-{end})")
-            #             found = True
-            #             break
-            #     if not found:
-            #         print(f"[MISS] ID '{value}' not found.")
-            # else:
             match = re.search(re.escape(value), text, re.IGNORECASE)
             if match:
-                start, end = match.start(), match.end()
-                print(f"[MATCH] {label} : '{value}' ({start}-{end})")
+                start, end = match.span()
                 entities.append((start, end, label_upper))
             else:
                 print(f"[MISS] {label} '{value}' not found in OCR text.")
@@ -62,16 +51,95 @@ def generate_training_data():
         for start, end, label in entities:
             span = doc.char_span(start, end, label=label, alignment_mode="contract") or \
                    doc.char_span(start, end, label=label, alignment_mode="expand")
-            if not span:
-                print(f"[WARN] Could not align span for: '{text[start:end]}' ({label})")
-            else:
+            if span:
                 spans.append(span)
 
         doc.ents = spans
         db.add(doc)
 
-    db.to_disk(OUTPUT_FILE)
-    print(f"\n[ok] Saved training data to '{OUTPUT_FILE}' with {len(logs)} documents.")
+    out_file = f"training_{doc_type}.spacy"
+    db.to_disk(out_file)
+    print(f"[ok] Saved training data: {out_file}")
+
+def auto_train_models():
+    doc_types = set()
+
+    with open(INPUT_FILE, "r", encoding="utf-8") as f:
+        logs = json.load(f)
+        for entry in logs:
+            if "doc_type" in entry:
+                doc_types.add(entry["doc_type"])
+
+    for doc_type in doc_types:
+        print(f"\n🔁 Generating training data for '{doc_type}'...")
+        generate_training_data_for_type(doc_type)
+
+        output_dir = os.path.join(NER_MODEL_BASE, doc_type)
+        os.makedirs(output_dir, exist_ok=True)
+
+        print(f"🚀 Training spaCy model for '{doc_type}'...")
+        result = os.system(
+            f"python -m spacy train config.cfg --output {output_dir} --paths.train training_{doc_type}.spacy --paths.dev training_{doc_type}.spacy"
+        )
+
+        if result == 0:
+            print(f"[ok] Model for '{doc_type}' saved to: {output_dir}")
+        else:
+            print(f"[fail] Training failed for: {doc_type}")
+
+
+def generate_training_data_latest():
+    nlp = spacy.blank("en")
+    db = DocBin()
+
+    with open(INPUT_FILE, "r", encoding="utf-8") as f:
+        logs = json.load(f)
+
+    if not logs:
+        print("[warn] No entries found.")
+        return None, None
+
+    latest = logs[-1]
+    doc_type = latest.get("doc_type", "unknown")
+    label_map = get_dynamic_label_map([latest])
+
+    text = latest["ocr_text"]
+    corrected = latest["corrected_fields"]
+    entities = []
+
+    for label, value in corrected.items():
+        label_upper = label_map[label]
+        match = re.search(re.escape(value), text, re.IGNORECASE)
+        if match:
+            start, end = match.span()
+            entities.append((start, end, label_upper))
+
+    doc = nlp.make_doc(text)
+    spans = []
+    for start, end, label in entities:
+        span = doc.char_span(start, end, label=label, alignment_mode="contract") or \
+               doc.char_span(start, end, label=label, alignment_mode="expand")
+        if span:
+            spans.append(span)
+
+    doc.ents = spans
+    db.add(doc)
+
+    out_file = f"training_{doc_type}_latest.spacy"
+    db.to_disk(out_file)
+    print(f"[ok] Saved latest-only training file: {out_file}")
+    return out_file, doc_type
+
 
 if __name__ == "__main__":
-    generate_training_data()
+    out_file, doc_type = generate_training_data_latest()
+    if out_file and doc_type:
+        output_dir = os.path.join(NER_MODEL_BASE, doc_type)
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"🚀 Training spaCy model for latest '{doc_type}' correction...")
+        result = os.system(
+            f"python -m spacy train config.cfg --output {output_dir} --paths.train {out_file} --paths.dev {out_file}"
+        )
+        if result == 0:
+            print(f"[ok] Latest model trained and saved to {output_dir}")
+

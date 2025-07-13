@@ -1,6 +1,12 @@
 import streamlit as st
 import numpy as np
 import cv2
+import spacy
+import subprocess
+import sys
+import os
+import json
+
 from PIL import Image
 from utils import (
     preprocess_image,
@@ -8,12 +14,11 @@ from utils import (
     parse_fields,
     parse_with_spacy,
     save_correction,
-    get_nlp  
+    get_nlp,
+    update_model_on_correction
 )
-import subprocess
-import sys
-import os
-import json
+from document_classifier import predict_doc_type
+
 
 st.set_page_config(page_title="CuriousScanner", layout="centered")
 
@@ -42,6 +47,8 @@ if uploaded_file:
     processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
 
     text = extract_text(processed_img)
+    doc_type = predict_doc_type(text)
+    st.info(f"📄 Detected document type: {doc_type.title()}")
     st.text(f"[DEBUG] OCR text length: {len(text)}")
 
     if text.strip():
@@ -51,9 +58,22 @@ if uploaded_file:
 
     # Choose parsing method
     if mode == "AI-powered (NER)":
-        fields = parse_with_spacy(text)
+        # Optional: use different NER models per doc type
+        doc_model_map = {
+            "student": "ner_model/student",
+            "employee": "ner_model/employee",
+            "invoice": "ner_model/invoice",
+            "visiting_card": "ner_model/visiting_card"
+        }
+        model_dir = f"ner_model/{doc_type}/model-best"
+        if not os.path.exists(model_dir):
+            model_dir = "ner_model/model-best"
+
+        fields = parse_with_spacy(text, model_path=model_dir)
+
     else:
         fields = parse_fields(text)
+
 
     # Session state for custom field additions
     if "custom_fields" not in st.session_state:
@@ -103,19 +123,32 @@ if uploaded_file:
     #     st.session_state.custom_fields = []
 
     if st.button("✅ Save Correction"):
-        save_correction(text, corrected)
+        # Save user-corrected data and compute reward
+        save_correction(text, corrected, predicted_data=fields, doc_type=doc_type)
         st.success("✅ Correction saved to `corrections_log.json`!")
 
+        # Online update (self-learning)
+        nlp = spacy.load(model_dir) if os.path.exists(model_dir) else None
+        if nlp:
+            losses = update_model_on_correction(nlp, text, corrected)  # first apply correction
+            nlp.to_disk(model_dir)  # then save the updated model
+            st.success(f"📁 Model updated and saved to {model_dir}")
+            st.info(f"🤖 Model updated with correction. Losses: {losses}")
+        else:
+            st.warning("⚠️ Model not loaded. Skipped online update.")
+
+
+
         # Show latest saved correction
-        if os.path.exists("corrections_log.json"):
-            with open("corrections_log.json", "r", encoding="utf-8") as f:
-                corrections = json.load(f)
-                if corrections:
-                    latest = corrections[-1]
-                    st.markdown("#### 📝 Last Saved OCR Text")
-                    st.code(latest["ocr_text"], language="text")
-                    st.markdown("#### ✅ Last Saved Fields")
-                    st.json(latest["corrected_fields"])
+        # if os.path.exists("corrections_log.json"):
+        #     with open("corrections_log.json", "r", encoding="utf-8") as f:
+        #         corrections = json.load(f)
+        #         if corrections:
+        #             latest = corrections[-1]
+        #             st.markdown("#### 📝 Last Saved OCR Text")
+        #             st.code(latest["ocr_text"], language="text")
+        #             st.markdown("#### ✅ Last Saved Fields")
+        #             st.json(latest["corrected_fields"])
 
     st.markdown("---")
     st.caption("📚 This scanner improves the more you use it. Feedback = better AI.")
@@ -131,36 +164,21 @@ if st.button("🚀 Retrain Now"):
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
 
-    with st.spinner("🔧 Generating training data..."):
-        result1 = subprocess.run(
+    with st.spinner("🧠 Training NER model (latest correction only)..."):
+        result = subprocess.run(
             [python_path, "generate_spacy_data.py"],
-            cwd=os.getcwd(),
-            capture_output=True,
-            text=True,
-            env=env  # ✅ injects UTF-8 encoding into subprocess
-        )
-        with st.expander("📄 Training Data Output"):
-            if result1.returncode != 0:
-                st.error("❌ Failed to run generate_spacy_data.py")
-                st.code(result1.stderr)
-            else:
-                st.code(result1.stdout)
-
-
-    with st.spinner("🧠 Training NER model..."):
-        result2 = subprocess.run(
-            [python_path, "-m", "spacy", "train", "config.cfg", "--output", "ner_model"],
             cwd=os.getcwd(),
             capture_output=True,
             text=True,
             env=env
         )
         with st.expander("📦 Training Output"):
-            if result2.returncode != 0:
-                st.error("❌ Failed to run generate_spacy_data.py")
-                st.code(result2.stderr)
+            if result.returncode != 0:
+                st.error("❌ Training failed")
+                st.code(result.stderr)
             else:
-                st.code(result2.stdout)
+                st.code(result.stdout)
+
 
     get_nlp.clear()  # ✅ Reload new model
 
@@ -177,5 +195,14 @@ if st.button("🚀 Retrain Now"):
 
                     st.markdown("**✅ Corrected Fields Used for Training**")
                     st.json(latest["corrected_fields"])
+
+    # ✅ Show last reward only
+    if os.path.exists("corrections_log.json"):
+        with open("corrections_log.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if data:
+                last_reward = data[-1].get("reward", 0)
+                st.subheader("🎯 Last Correction Reward")
+                st.metric(label="Reward", value=f"{last_reward:.1f}")
 
     st.success("✅ Retraining complete! Please refresh the app to load the new model.")

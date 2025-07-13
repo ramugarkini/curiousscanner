@@ -25,3 +25,89 @@ curiousscanner/
 python generate_spacy_data.py
 python -m spacy train config.cfg --output ner_model
 python -m spacy evaluate ner_model/model-best training_data.spacy
+
+
+
+
+
+
+
+
+
+
+
+
+
+🧪 ✅ How to Test the Full Flow
+Here’s your step-by-step execution checklist:
+
+🔧 1. ✅ (Optional) Clean Start
+If you're testing from scratch:
+
+
+del classifier_model.pkl
+del training_*.spacy
+rd /s /q ner_model
+📦 2. ✅ Train the Document Type Classifier
+
+python document_classifier.py
+This reads from corrections_log.json and creates:
+
+
+classifier_model.pkl
+✅ Make sure it prints:
+[ok] Retrained document classifier with X samples.
+
+🧠 3. ✅ Train All NER Models by Document Type
+
+python generate_spacy_data.py
+This will:
+
+Create files like training_student.spacy, training_employee.spacy, etc.
+
+Train models into ner_model/student/model-best, ner_model/employee/model-best, etc.
+
+✅ Output should include:
+
+[ok] Saved training data: training_student.spacy
+[ok] Model for 'student' saved to: ner_model/student
+🚀 4. ✅ Run the App
+
+streamlit run app.py
+Then in your browser:
+
+Upload an ID card, invoice, etc.
+
+Watch the detected type
+
+See parsed fields
+
+Make corrections
+
+Click ✅ Save Correction
+
+✅ Should:
+
+Show detected doc_type
+
+Show extracted fields
+
+Save correction in corrections_log.json
+
+Apply online update and save updated model to:
+ner_model/<doc_type>/model-best
+
+🔁 5. ✅ Test Retrain Button
+Click 🚀 Retrain Now in the UI.
+
+✅ It should:
+
+Regenerate .spacy training files
+
+Retrain models per doc_type
+
+Output updated stats
+
+Show last used correction
+
+Plot reward trend
