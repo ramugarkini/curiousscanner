@@ -1,4 +1,4 @@
-& "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.9_3.9.3568.0_x64__qbz5n2kfra8p0\python3.9.exe" -m venv .venv                        
+& "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.8_3.8.2800.0_x64__qbz5n2kfra8p0\python3.8.exe" -m venv .venv
 .venv\Scripts\activate  
 
 curiousscanner/
@@ -20,3 +20,8 @@ curiousscanner/
 ├── config.cfg               ← [STEP 2]
 ├── training_data.spacy      ← [STEP 1 Output]
 ├── ner_model/               ← [STEP 3 Output]
+
+
+python generate_spacy_data.py
+python -m spacy train config.cfg --output ner_model
+python -m spacy evaluate ner_model/model-best training_data.spacy
