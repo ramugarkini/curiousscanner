@@ -27,6 +27,7 @@ python -m spacy train config.cfg --output ner_model
 python -m spacy evaluate ner_model/model-best training_data.spacy
 
 
+User uploads → OCR → Predict doc_type → Parse fields (NER) → User corrects → Save → Model updated or retrained
 
 
 

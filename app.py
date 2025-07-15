@@ -1,3 +1,4 @@
+
 import streamlit as st
 import numpy as np
 import cv2
@@ -7,7 +8,10 @@ import sys
 import os
 import sqlite3
 import json
+import fitz
 
+
+from pdf2image import convert_from_bytes
 from PIL import Image
 from utils import (
     preprocess_image,
@@ -18,64 +22,82 @@ from utils import (
     get_nlp,
     update_model_on_correction
 )
-from document_classifier import predict_doc_type
 
 DB_FILE = "corrections.db"
+MODEL_DIR = "ner_model/model-best"
 
 st.set_page_config(page_title="CuriousScanner", layout="centered")
-
 st.title("🤖 CuriousScanner")
-st.markdown("Upload or capture a **college ID card**, and I’ll extract the details dynamically!")
+st.markdown("Upload or capture a document, and I’ll extract the details dynamically!")
 
-# File uploader or camera input
-uploaded_file = st.file_uploader("📂 Upload ID Card Image", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("📂 Upload Document", type=["jpg", "jpeg", "png", "pdf"])
+
 if not uploaded_file:
-    uploaded_file = st.camera_input("📸 Or capture ID card using webcam")
+    uploaded_file = st.camera_input("📸 Or capture using webcam")
 
-# Parsing mode selection
 mode = st.radio("🧠 Choose Parsing Mode", ["AI-powered (NER)", "Regex (Classic)"], horizontal=True)
 
 if uploaded_file:
-    # Load and convert image
-    image = Image.open(uploaded_file).convert("RGB")
-    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    if uploaded_file.type == "application/pdf":
+        text = ""
+        pdf_bytes = uploaded_file.read()  # ✅ read once
 
-    # Show image
-    st.image(uploaded_file, caption="ID Card", use_container_width=True)
+        try:
+            with st.spinner("🔍 Extracting text from PDF..."):
+                with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                    for page in doc:
+                        text += page.get_text().strip()
+        except Exception as e:
+            st.error(f"Failed to open PDF: {e}")
+            st.stop()
 
-    # OCR and preprocessing
-    # st.info("🔍 Processing image...")
-    use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
-    processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
+        if not text.strip():
+            st.warning("⚠️ No extractable text found. Falling back to OCR...")
 
-    text = extract_text(processed_img)
-    doc_type = predict_doc_type(text)
-    st.info(f"📄 Detected document type: {doc_type.title()}")
-    st.text(f"[DEBUG] OCR text length: {len(text)}")
+            try:
+                with st.spinner("🖼️ Converting PDF to image for OCR..."):
+                    images = convert_from_bytes(pdf_bytes)
+            except Exception as e:
+                st.error(f"PDF to image conversion failed: {e}")
+                st.stop()
+
+            if not images:
+                st.error("❌ No pages found in PDF.")
+                st.stop()
+
+            image = images[0]
+            img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
+            processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
+            text = extract_text(processed_img)
+            st.image(image, caption="PDF Page (Rendered as Image)", use_container_width=True)
+        else:
+            st.success("✅ Extracted text directly from PDF!")
+            image = None
+
+    else:
+        # Regular image input
+        image = Image.open(uploaded_file).convert("RGB")
+        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
+        processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
+        text = extract_text(processed_img)
+        st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
 
     if text.strip():
         st.text_area("📜 OCR Text Output", text, height=150)
     else:
         st.warning("⚠️ OCR failed. Try again with better lighting or focus.")
 
-    # Choose parsing method
     if mode == "AI-powered (NER)":
-        doc_model_map = {
-            "student": "ner_model/student",
-            "employee": "ner_model/employee",
-            "invoice": "ner_model/invoice",
-            "visiting_card": "ner_model/visiting_card"
-        }
-        model_dir = f"ner_model/{doc_type}/model-best"
-        if not os.path.exists(model_dir):
-            model_dir = "ner_model/model-best"
-
-        fields = parse_with_spacy(text, model_path=model_dir)
-
+        if not os.path.exists(os.path.join(MODEL_DIR, "meta.json")):
+            st.warning("⚠️ NER model not found yet. Please save a correction or click 'Retrain' to initialize.")
+            fields = {}
+        else:
+            fields = parse_with_spacy(text, model_path=MODEL_DIR)
     else:
         fields = parse_fields(text)
 
-    # Session state for custom field additions
     if "custom_fields" not in st.session_state:
         st.session_state.custom_fields = []
 
@@ -86,7 +108,6 @@ if uploaded_file:
     for key in sorted(fields.keys()):
         corrected[key] = st.text_input(f"{key}", value=fields[key])
 
-    # ➕ Add custom fields
     st.markdown("#### ➕ Add Custom Field")
     with st.form("add_field_form", clear_on_submit=True):
         col1, col2, col3 = st.columns([4, 4, 2])
@@ -95,11 +116,9 @@ if uploaded_file:
         col3.markdown(" ")
         col3.markdown(" ")
         add_btn = col3.form_submit_button("➕ Add Field")
-
         if add_btn and new_key:
             st.session_state.custom_fields.append((new_key, new_value))
 
-    # st.markdown("#### 📝 Custom Fields")
     delete_indices = []
     for i, (key, value) in enumerate(st.session_state.custom_fields):
         cols = st.columns([3, 3, 1])
@@ -112,39 +131,58 @@ if uploaded_file:
             delete_indices.append(i)
         else:
             corrected[updated_key] = updated_val
-
     for i in sorted(delete_indices, reverse=True):
         del st.session_state.custom_fields[i]
 
     if st.button("✅ Save Correction"):
-        save_correction(text, corrected, predicted_data=fields, doc_type=doc_type)
-        # st.success("✅ Correction saved to SQLite!")
+        save_correction(text, corrected, predicted_data=fields)
 
-        nlp = spacy.load(model_dir) if os.path.exists(model_dir) else None
-        if nlp:
-            losses = update_model_on_correction(nlp, text, corrected)
-            nlp.to_disk(model_dir)
-            st.success(f"📁 Model updated and saved to {model_dir}")
-            st.info(f"🤖 Model updated with correction. Losses: {losses}")
-        else:
-            st.warning("⚠️ Model not loaded. Skipped online update.")
+        # If model doesn't exist, train it first
+        if not os.path.exists(os.path.join(MODEL_DIR, "meta.json")):
+            st.info("🧠 Model not found — training from scratch now...")
+            python_path = sys.executable
+            result = subprocess.run(
+                [python_path, "generate_spacy_data.py"],
+                cwd=os.getcwd(),
+                env=os.environ.copy(),
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                st.success("✅ Model trained successfully!")
+            else:
+                st.error("❌ Auto-training failed")
+                st.code(result.stderr)
+                st.stop()
 
-    st.markdown("---")
-    st.caption("📚 This scanner improves the more you use it. Feedback = better AI.")
+        # Model exists now → load and update it with the latest correction
+        nlp = spacy.load(MODEL_DIR)
+        losses = update_model_on_correction(nlp, text, corrected)
+        nlp.to_disk(MODEL_DIR)
 
-# Retraining block
+        st.success(f"📁 Model updated and saved to {MODEL_DIR}")
+        st.info(f"🤖 Model updated with correction. Losses: {losses}")
+
+        st.markdown("---")
+        st.caption("📚 This scanner improves the more you use it. Feedback = better AI.")
+
 st.markdown("---")
 st.subheader("🔁 Retrain NER Model")
-st.write("Click the button below to regenerate training data and retrain the AI model based on saved corrections.")
+use_latest_only = st.checkbox("Train on latest correction only", value=False)
+# st.write("Click the button below to regenerate training data and retrain the AI model based on saved corrections.")
 
 if st.button("🚀 Retrain Now"):
     python_path = sys.executable
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
 
-    with st.spinner("🧠 Training NER model (latest correction only)..."):
+    args = [python_path, "generate_spacy_data.py"]
+    if use_latest_only:
+        args.append("--latest-only")
+
+    with st.spinner("🧠 Training NER model..."):
         result = subprocess.run(
-            [python_path, "generate_spacy_data.py"],
+            args,
             cwd=os.getcwd(),
             capture_output=True,
             text=True,
@@ -158,8 +196,6 @@ if st.button("🚀 Retrain Now"):
                 st.code(result.stdout)
 
     get_nlp.clear()
-
-    # ✅ Show latest correction info used in training (from SQLite)
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -174,7 +210,6 @@ if st.button("🚀 Retrain Now"):
                 st.code(ocr_text, language="text")
                 st.markdown("**✅ Corrected Fields Used for Training**")
                 st.json(json.loads(corrected_json))
-
             st.subheader("🎯 Last Correction Reward")
             st.metric(label="Reward", value=f"{reward:.1f}")
     except Exception as e:
