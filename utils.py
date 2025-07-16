@@ -65,6 +65,10 @@ def parse_fields(text):
     return info
 
 def parse_with_spacy(text, model_path=NER_MODEL_PATH):
+    if not os.path.exists(model_path):
+        st.warning(f"⚠️ Model not found at {model_path}")
+        return {}
+
     try:
         nlp = spacy.load(model_path)
     except:
