@@ -1,22 +1,21 @@
-
 import sqlite3
 import json
 import re
 import spacy
 import os
-
+import subprocess
 from spacy.tokens import DocBin
 import sys
 import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+# Ensure UTF-8 output for logging
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 DB_FILE = "corrections.db"
 NER_MODEL_BASE = "ner_model"
-MODEL_OUTPUT_DIR = NER_MODEL_BASE
 TRAINING_FILE = "training_data.spacy"
 
-def fetch_logs(latest_only=False):
+def fetch_logs(latest_only=False, doc_type=None):
     if not os.path.exists(DB_FILE):
         print(f"[warn] Database file '{DB_FILE}' not found.")
         return []
@@ -24,10 +23,16 @@ def fetch_logs(latest_only=False):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     query = "SELECT ocr_text, corrected_fields FROM corrections"
+    if doc_type:
+        query += " WHERE doc_type = ?"
+        args = (doc_type,)
+    else:
+        args = ()
+
     if latest_only:
         query += " ORDER BY id DESC LIMIT 1"
 
-    rows = cursor.execute(query).fetchall()
+    rows = cursor.execute(query, args).fetchall()
     conn.close()
 
     logs = []
@@ -77,7 +82,8 @@ def generate_training_data(logs, output_file):
         doc = nlp.make_doc(text)
         spans = []
         for start, end, label in entities:
-            span = doc.char_span(start, end, label=label, alignment_mode="contract") or                    doc.char_span(start, end, label=label, alignment_mode="expand")
+            span = doc.char_span(start, end, label=label, alignment_mode="contract") or \
+                   doc.char_span(start, end, label=label, alignment_mode="expand")
             if span:
                 spans.append(span)
 
@@ -90,15 +96,30 @@ def generate_training_data(logs, output_file):
 
 if __name__ == "__main__":
     latest_only = "--latest-only" in sys.argv
-    logs = fetch_logs(latest_only=latest_only)
+
+    doc_type = None
+    if "--doc-type" in sys.argv:
+        idx = sys.argv.index("--doc-type") + 1
+        if idx < len(sys.argv):
+            doc_type = sys.argv[idx]
+
+    print(f"[info] Training model for doc_type: {doc_type or 'default'}")
+
+    logs = fetch_logs(latest_only=latest_only, doc_type=doc_type)
+    print(f"[info] Found {len(logs)} correction(s) for training.")
+
+    MODEL_OUTPUT_DIR = os.path.join(NER_MODEL_BASE, doc_type or "default")
 
     if generate_training_data(logs, TRAINING_FILE):
         os.makedirs(MODEL_OUTPUT_DIR, exist_ok=True)
-        print(f"Training spaCy model...")
-        result = os.system(
-            f"python -m spacy train config.cfg --output {MODEL_OUTPUT_DIR} --paths.train {TRAINING_FILE} --paths.dev {TRAINING_FILE}"
-        )
-        if result == 0:
+        print(f"[info] Training spaCy model...")
+        result = subprocess.run([
+            "python", "-m", "spacy", "train", "config.cfg",
+            "--output", MODEL_OUTPUT_DIR,
+            "--paths.train", TRAINING_FILE,
+            "--paths.dev", TRAINING_FILE
+        ])
+        if result.returncode == 0:
             print(f"[ok] Model saved to: {MODEL_OUTPUT_DIR}")
         else:
             print("[fail] Training failed.")
