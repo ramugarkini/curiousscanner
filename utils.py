@@ -11,7 +11,7 @@ from spacy.training.example import Example
 import sqlite3
 
 DB_FILE = "corrections.db"
-NER_MODEL_PATH = "ner_model/model-best"
+NER_MODEL_PATH = "ner_model/default/model-best"
 
 @st.cache_resource(show_spinner="🔁 Loading NER model...")
 def get_nlp(model_path=NER_MODEL_PATH):
@@ -88,11 +88,12 @@ def parse_with_spacy(text, model_path=NER_MODEL_PATH):
 
     return result
 
-def save_correction(ocr_text, corrected_data, predicted_data=None):
+def save_correction(ocr_text, corrected_data, doc_type, predicted_data=None):
     timestamp = datetime.now().isoformat()
     reward = compute_reward(predicted_data or {}, corrected_data)
 
-    os.makedirs(os.path.dirname(NER_MODEL_PATH), exist_ok=True)
+    model_path = f"ner_model/{doc_type}/model-best"
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -104,22 +105,25 @@ def save_correction(ocr_text, corrected_data, predicted_data=None):
             ocr_text TEXT,
             predicted_fields TEXT,
             corrected_fields TEXT,
-            reward REAL
+            reward REAL,
+            doc_type TEXT
         )
         """)
         cursor.execute("""
-        INSERT INTO corrections (timestamp, ocr_text, predicted_fields, corrected_fields, reward)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO corrections (timestamp, ocr_text, predicted_fields, corrected_fields, reward, doc_type)
+        VALUES (?, ?, ?, ?, ?, ?)
         """, (
             timestamp,
             ocr_text,
             json.dumps(predicted_data or {}),
             json.dumps(corrected_data),
-            reward
+            reward,
+            doc_type
         ))
         conn.commit()
         conn.close()
         st.success("✅ Correction saved to SQLite!")
+        print(f"[save_correction] Saved correction for doc_type={doc_type}, reward={reward:.2f}")
     except Exception as e:
         st.error(f"[ERROR] Failed to save correction to DB: {e}")
 
