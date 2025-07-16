@@ -10,7 +10,6 @@ import sqlite3
 import json
 import fitz
 
-
 from pdf2image import convert_from_bytes
 from PIL import Image
 from utils import (
@@ -24,7 +23,6 @@ from utils import (
 )
 
 DB_FILE = "corrections.db"
-MODEL_DIR = "ner_model/model-best"
 
 st.set_page_config(page_title="CuriousScanner", layout="centered")
 st.title("🤖 CuriousScanner")
@@ -134,15 +132,38 @@ if uploaded_file:
     for i in sorted(delete_indices, reverse=True):
         del st.session_state.custom_fields[i]
 
+    # Fetch existing doc types
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT doc_type FROM corrections")
+    doc_types = [row[0] for row in cursor.fetchall()]
+    conn.close()
+
+    # Let user choose or create doc type
+    selected_doc_type = st.selectbox("Select Document Type", doc_types + ["➕ New Type"])
+    if selected_doc_type == "➕ New Type":
+        new_type = st.text_input("Enter New Doc Type Name")
+        if new_type:
+            doc_type = new_type.strip()
+    else:
+        doc_type = selected_doc_type
+
+    # ✅ Add this check immediately after setting doc_type
+    if not doc_type:
+        st.error("❌ Please enter or select a valid document type.")
+        st.stop()
+
+    MODEL_DIR = f"ner_model/{doc_type}/model-best"
+
     if st.button("✅ Save Correction"):
-        save_correction(text, corrected, predicted_data=fields)
+        save_correction(text, corrected, doc_type=doc_type, predicted_data=fields)
 
         # If model doesn't exist, train it first
         if not os.path.exists(os.path.join(MODEL_DIR, "meta.json")):
             st.info("🧠 Model not found — training from scratch now...")
             python_path = sys.executable
             result = subprocess.run(
-                [python_path, "generate_spacy_data.py"],
+                [python_path, "generate_spacy_data.py", "--doc-type", doc_type],
                 cwd=os.getcwd(),
                 env=os.environ.copy(),
                 capture_output=True,
@@ -172,11 +193,16 @@ use_latest_only = st.checkbox("Train on latest correction only", value=False)
 # st.write("Click the button below to regenerate training data and retrain the AI model based on saved corrections.")
 
 if st.button("🚀 Retrain Now"):
+    # ✅ Ensure doc_type is defined
+    if 'doc_type' not in locals():
+        st.error("⚠️ Please select a document type first.")
+        st.stop()
+
     python_path = sys.executable
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
 
-    args = [python_path, "generate_spacy_data.py"]
+    args = [python_path, "generate_spacy_data.py", "--doc-type", doc_type]
     if use_latest_only:
         args.append("--latest-only")
 
