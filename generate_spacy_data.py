@@ -64,6 +64,7 @@ def generate_training_data(logs, output_file):
     nlp = spacy.blank("en")
     db = DocBin()
     label_map = get_dynamic_label_map(logs)
+    print(f"[info] Labels mapped for training: {label_map}")
 
     for entry in logs:
         text = entry["ocr_text"]
@@ -92,6 +93,7 @@ def generate_training_data(logs, output_file):
 
     db.to_disk(output_file)
     print(f"[ok] Saved training data: {output_file}")
+    print(f"[info] Training data saved ({db.to_bytes().__sizeof__()} bytes)")
     return True
 
 if __name__ == "__main__":
@@ -123,3 +125,4 @@ if __name__ == "__main__":
             print(f"[ok] Model saved to: {MODEL_OUTPUT_DIR}")
         else:
             print("[fail] Training failed.")
+            print(result.stderr)
