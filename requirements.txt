@@ -5,4 +5,4 @@ pillow
 PyMuPDF
 pdf2image
 pytesseract
-spacy
+spacy==3.7.2
