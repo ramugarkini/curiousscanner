@@ -1,4 +1,3 @@
-
 import streamlit as st
 import numpy as np
 import cv2
@@ -36,9 +35,9 @@ if not uploaded_file:
 mode = st.radio("🧠 Choose Parsing Mode", ["AI-powered (NER)", "Regex (Classic)"], horizontal=True)
 
 if uploaded_file:
+    text = ""
     if uploaded_file.type == "application/pdf":
-        text = ""
-        pdf_bytes = uploaded_file.read()  # ✅ read once
+        pdf_bytes = uploaded_file.read()
 
         try:
             with st.spinner("🔍 Extracting text from PDF..."):
@@ -51,7 +50,6 @@ if uploaded_file:
 
         if not text.strip():
             st.warning("⚠️ No extractable text found. Falling back to OCR...")
-
             try:
                 with st.spinner("🖼️ Converting PDF to image for OCR..."):
                     images = convert_from_bytes(pdf_bytes)
@@ -72,9 +70,7 @@ if uploaded_file:
         else:
             st.success("✅ Extracted text directly from PDF!")
             image = None
-
     else:
-        # Regular image input
         image = Image.open(uploaded_file).convert("RGB")
         img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
@@ -83,117 +79,129 @@ if uploaded_file:
         st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
 
     if text.strip():
-        st.text_area("📜 OCR Text Output", text, height=150)
+        text = st.text_area("📜 OCR Text Output (Editable)", text, height=150)
+
+        # Get document type first
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        # Ensure corrections table exists before querying
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS corrections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                ocr_text TEXT,
+                predicted_fields TEXT,
+                corrected_fields TEXT,
+                reward REAL,
+                doc_type TEXT
+            )
+        """)
+
+        cursor.execute("SELECT DISTINCT doc_type FROM corrections")
+        doc_types = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        selected_doc_type = st.selectbox("Select Document Type", doc_types + ["➕ New Type"])
+        if selected_doc_type == "➕ New Type":
+            new_type = st.text_input("Enter New Doc Type Name")
+            if new_type:
+                doc_type = new_type.strip()
+            else:
+                doc_type = ""
+        else:
+            doc_type = selected_doc_type
+
+        if not doc_type:
+            st.error("❌ Please enter or select a valid document type.")
+            st.stop()
+
+        MODEL_DIR = f"ner_model/{doc_type}/model-best"
+
+        # Now parse the fields
+        if mode == "AI-powered (NER)":
+            if not os.path.exists(os.path.join(MODEL_DIR, "meta.json")):
+                st.warning("⚠️ NER model not found yet. Please save a correction or click 'Retrain' to initialize.")
+                fields = {}
+            else:
+                fields = parse_with_spacy(text, model_path=MODEL_DIR)
+        else:
+            fields = parse_fields(text)
+
+        if "custom_fields" not in st.session_state:
+            st.session_state.custom_fields = []
+
+        st.subheader("✏️ Verify & Correct Extracted Fields")
+        corrected = {}
+
+        st.markdown("#### 🔍 Extracted Fields")
+        for key in sorted(fields.keys()):
+            corrected[key] = st.text_input(f"{key}", value=fields[key])
+
+        st.markdown("#### ➕ Add Custom Field")
+        with st.form("add_field_form", clear_on_submit=True):
+            col1, col2, col3 = st.columns([4, 4, 2])
+            new_key = col1.text_input("Field Name", key="new_key")
+            new_value = col2.text_input("Field Value", key="new_value")
+            col3.markdown(" ")
+            col3.markdown(" ")
+            add_btn = col3.form_submit_button("➕ Add Field")
+            if add_btn and new_key:
+                st.session_state.custom_fields.append((new_key, new_value))
+
+        delete_indices = []
+        for i, (key, value) in enumerate(st.session_state.custom_fields):
+            cols = st.columns([3, 3, 1])
+            updated_key = cols[0].text_input(f"Key {i+1}", key, key=f"custom_key_{i}")
+            updated_val = cols[1].text_input(f"Value {i+1}", value, key=f"custom_val_{i}")
+            cols[2].markdown(" ")
+            cols[2].markdown(" ")
+            delete = cols[2].button("🗑️", key=f"delete_btn_{i}")
+            if delete:
+                delete_indices.append(i)
+            else:
+                corrected[updated_key] = updated_val
+        for i in sorted(delete_indices, reverse=True):
+            del st.session_state.custom_fields[i]
+
+        if st.button("✅ Save Correction"):
+            save_correction(text, corrected, doc_type=doc_type, predicted_data=fields)
+
+            if not os.path.exists(os.path.join(MODEL_DIR, "meta.json")):
+                st.info("🧠 Model not found — training from scratch now...")
+                python_path = sys.executable
+                result = subprocess.run(
+                    [python_path, "generate_spacy_data.py", "--doc-type", doc_type],
+                    cwd=os.getcwd(),
+                    env=os.environ.copy(),
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    st.success("✅ Model trained successfully!")
+                else:
+                    st.error("❌ Auto-training failed")
+                    st.code(result.stderr)
+                    st.stop()
+
+            nlp = spacy.load(MODEL_DIR)
+            losses = update_model_on_correction(nlp, text, corrected)
+            nlp.to_disk(MODEL_DIR)
+
+            st.success(f"📁 Model updated and saved to {MODEL_DIR}")
+            st.info(f"🤖 Model updated with correction. Losses: {losses}")
+
+            st.markdown("---")
+            st.caption("📚 This scanner improves the more you use it. Feedback = better AI.")
     else:
         st.warning("⚠️ OCR failed. Try again with better lighting or focus.")
-
-    if mode == "AI-powered (NER)":
-        if not os.path.exists(os.path.join(MODEL_DIR, "meta.json")):
-            st.warning("⚠️ NER model not found yet. Please save a correction or click 'Retrain' to initialize.")
-            fields = {}
-        else:
-            fields = parse_with_spacy(text, model_path=MODEL_DIR)
-    else:
-        fields = parse_fields(text)
-
-    if "custom_fields" not in st.session_state:
-        st.session_state.custom_fields = []
-
-    st.subheader("✏️ Verify & Correct Extracted Fields")
-    corrected = {}
-
-    st.markdown("#### 🔍 Extracted Fields")
-    for key in sorted(fields.keys()):
-        corrected[key] = st.text_input(f"{key}", value=fields[key])
-
-    st.markdown("#### ➕ Add Custom Field")
-    with st.form("add_field_form", clear_on_submit=True):
-        col1, col2, col3 = st.columns([4, 4, 2])
-        new_key = col1.text_input("Field Name", key="new_key")
-        new_value = col2.text_input("Field Value", key="new_value")
-        col3.markdown(" ")
-        col3.markdown(" ")
-        add_btn = col3.form_submit_button("➕ Add Field")
-        if add_btn and new_key:
-            st.session_state.custom_fields.append((new_key, new_value))
-
-    delete_indices = []
-    for i, (key, value) in enumerate(st.session_state.custom_fields):
-        cols = st.columns([3, 3, 1])
-        updated_key = cols[0].text_input(f"Key {i+1}", key, key=f"custom_key_{i}")
-        updated_val = cols[1].text_input(f"Value {i+1}", value, key=f"custom_val_{i}")
-        cols[2].markdown(" ")
-        cols[2].markdown(" ")
-        delete = cols[2].button("🗑️", key=f"delete_btn_{i}")
-        if delete:
-            delete_indices.append(i)
-        else:
-            corrected[updated_key] = updated_val
-    for i in sorted(delete_indices, reverse=True):
-        del st.session_state.custom_fields[i]
-
-    # Fetch existing doc types
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT doc_type FROM corrections")
-    doc_types = [row[0] for row in cursor.fetchall()]
-    conn.close()
-
-    # Let user choose or create doc type
-    selected_doc_type = st.selectbox("Select Document Type", doc_types + ["➕ New Type"])
-    if selected_doc_type == "➕ New Type":
-        new_type = st.text_input("Enter New Doc Type Name")
-        if new_type:
-            doc_type = new_type.strip()
-    else:
-        doc_type = selected_doc_type
-
-    # ✅ Add this check immediately after setting doc_type
-    if not doc_type:
-        st.error("❌ Please enter or select a valid document type.")
-        st.stop()
-
-    MODEL_DIR = f"ner_model/{doc_type}/model-best"
-
-    if st.button("✅ Save Correction"):
-        save_correction(text, corrected, doc_type=doc_type, predicted_data=fields)
-
-        # If model doesn't exist, train it first
-        if not os.path.exists(os.path.join(MODEL_DIR, "meta.json")):
-            st.info("🧠 Model not found — training from scratch now...")
-            python_path = sys.executable
-            result = subprocess.run(
-                [python_path, "generate_spacy_data.py", "--doc-type", doc_type],
-                cwd=os.getcwd(),
-                env=os.environ.copy(),
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
-                st.success("✅ Model trained successfully!")
-            else:
-                st.error("❌ Auto-training failed")
-                st.code(result.stderr)
-                st.stop()
-
-        # Model exists now → load and update it with the latest correction
-        nlp = spacy.load(MODEL_DIR)
-        losses = update_model_on_correction(nlp, text, corrected)
-        nlp.to_disk(MODEL_DIR)
-
-        st.success(f"📁 Model updated and saved to {MODEL_DIR}")
-        st.info(f"🤖 Model updated with correction. Losses: {losses}")
-
-        st.markdown("---")
-        st.caption("📚 This scanner improves the more you use it. Feedback = better AI.")
 
 st.markdown("---")
 st.subheader("🔁 Retrain NER Model")
 use_latest_only = st.checkbox("Train on latest correction only", value=False)
-# st.write("Click the button below to regenerate training data and retrain the AI model based on saved corrections.")
 
 if st.button("🚀 Retrain Now"):
-    # ✅ Ensure doc_type is defined
     if 'doc_type' not in locals():
         st.error("⚠️ Please select a document type first.")
         st.stop()
