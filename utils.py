@@ -1,4 +1,3 @@
-
 import cv2
 import pytesseract
 import re
@@ -9,10 +8,49 @@ import spacy
 import streamlit as st
 from spacy.training.example import Example
 import sqlite3
+from google.cloud import vision
+from google.oauth2 import service_account
 
+# ===========================
+# Configuration
+# ===========================
 DB_FILE = "corrections.db"
 NER_MODEL_PATH = "ner_model/default/model-best"
+GCP_KEY_FILE = "iminim-bbb2131135c5.json"
 
+# ===========================
+# Google Cloud Vision Client
+# ===========================
+@st.cache_resource(show_spinner="🔐 Initializing Google Cloud Vision...")
+def get_gcv_client():
+    try:
+        credentials = service_account.Credentials.from_service_account_file(GCP_KEY_FILE)
+        return vision.ImageAnnotatorClient(credentials=credentials)
+    except Exception as e:
+        st.error(f"❌ Failed to initialize GCV client: {e}")
+        return None
+
+def extract_text_gcv(image_bytes):
+    client = get_gcv_client()
+    if not client:
+        return ""
+
+    image = vision.Image(content=image_bytes)
+    try:
+        response = client.text_detection(image=image)
+    except Exception as e:
+        st.error(f"❌ GCV OCR failed: {e}")
+        return ""
+
+    if response.error.message:
+        st.error(f"GCV Error: {response.error.message}")
+        return ""
+
+    return response.full_text_annotation.text.strip() if response.full_text_annotation else ""
+
+# ===========================
+# Load NER
+# ===========================
 @st.cache_resource(show_spinner="🔁 Loading NER model...")
 def get_nlp(model_path=NER_MODEL_PATH):
     try:
@@ -21,6 +59,9 @@ def get_nlp(model_path=NER_MODEL_PATH):
         st.warning(f"⚠️ Failed to load NER model: {e}")
         return None
 
+# ===========================
+# Image Preprocessing
+# ===========================
 def preprocess_image(image, use_adaptive=False):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     if use_adaptive:
@@ -30,9 +71,15 @@ def preprocess_image(image, use_adaptive=False):
         )
     return gray
 
+# ===========================
+# OCR - Tesseract
+# ===========================
 def extract_text(image):
     return pytesseract.image_to_string(image)
 
+# ===========================
+# Key-Value Parsing
+# ===========================
 def parse_fields(text):
     info = {}
     lines = [line.strip() for line in text.split('\n') if line.strip()]
@@ -64,6 +111,9 @@ def parse_fields(text):
 
     return info
 
+# ===========================
+# NER Parsing
+# ===========================
 def parse_with_spacy(text, model_path=NER_MODEL_PATH):
     if not os.path.exists(model_path):
         st.warning(f"⚠️ Model not found at {model_path}")
@@ -92,6 +142,9 @@ def parse_with_spacy(text, model_path=NER_MODEL_PATH):
 
     return result
 
+# ===========================
+# Save to DB
+# ===========================
 def save_correction(ocr_text, corrected_data, doc_type, predicted_data=None):
     timestamp = datetime.now().isoformat()
     reward = compute_reward(predicted_data or {}, corrected_data)
@@ -131,6 +184,9 @@ def save_correction(ocr_text, corrected_data, doc_type, predicted_data=None):
     except Exception as e:
         st.error(f"[ERROR] Failed to save correction to DB: {e}")
 
+# ===========================
+# Reward Scoring
+# ===========================
 def compute_reward(predicted, corrected):
     reward = 0
     total = len(corrected)
@@ -143,6 +199,9 @@ def compute_reward(predicted, corrected):
             reward += 1
     return reward / total if total > 0 else 0
 
+# ===========================
+# Update NER Model
+# ===========================
 def update_model_on_correction(nlp, ocr_text, corrected):
     doc = nlp.make_doc(ocr_text)
     entities = []

@@ -6,3 +6,4 @@ PyMuPDF
 pdf2image
 pytesseract
 spacy==3.7.2
+google-cloud-vision

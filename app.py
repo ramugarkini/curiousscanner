@@ -14,6 +14,7 @@ from PIL import Image
 from utils import (
     preprocess_image,
     extract_text,
+    extract_text_gcv,
     parse_fields,
     parse_with_spacy,
     save_correction,
@@ -32,6 +33,7 @@ uploaded_file = st.file_uploader("📂 Upload Document", type=["jpg", "jpeg", "p
 if not uploaded_file:
     uploaded_file = st.camera_input("📸 Or capture using webcam")
 
+ocr_engine = st.radio("🔍 Choose OCR Engine", ["Tesseract (Offline)", "Google Cloud Vision (GCV)"], horizontal=True)
 mode = st.radio("🧠 Choose Parsing Mode", ["AI-powered (NER)", "Regex (Classic)"], horizontal=True)
 
 if uploaded_file:
@@ -63,28 +65,38 @@ if uploaded_file:
 
             image = images[0]
             img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-            use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
-            processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
-            text = extract_text(processed_img)
             st.image(image, caption="PDF Page (Rendered as Image)", use_container_width=True)
+
+            if ocr_engine == "Google Cloud Vision (GCV)":
+                with st.spinner("📡 Using GCV for OCR..."):
+                    # text = extract_text_gcv(np.array(image).tobytes())
+                    _, buffer = cv2.imencode(".jpg", np.array(image))
+                    text = extract_text_gcv(buffer.tobytes())
+            else:
+                use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
+                processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
+                text = extract_text(processed_img)
         else:
-            st.success("✅ Extracted text directly from PDF!")
+            st.success("✅ Extracted text directly from PDF! (No OCR needed)")
             image = None
     else:
         image = Image.open(uploaded_file).convert("RGB")
         img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
-        processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
-        text = extract_text(processed_img)
         st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
+
+        if ocr_engine == "Google Cloud Vision (GCV)":
+            with st.spinner("📡 Using GCV for OCR..."):
+                # text = extract_text_gcv(np.array(image).tobytes())
+                _, buffer = cv2.imencode(".jpg", np.array(image))
+                text = extract_text_gcv(buffer.tobytes())
+        else:
+            use_adaptive = st.checkbox("🧪 Use Adaptive Thresholding", value=False)
+            processed_img = preprocess_image(img_cv, use_adaptive=use_adaptive)
+            text = extract_text(processed_img)
 
     if text.strip():
         text = st.text_area("📜 OCR Text Output (Editable)", text, height=150)
 
-        # Get document type first
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        # Ensure corrections table exists before querying
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("""
@@ -119,7 +131,6 @@ if uploaded_file:
 
         MODEL_DIR = f"ner_model/{doc_type}/model-best"
 
-        # Now parse the fields
         if mode == "AI-powered (NER)":
             if not os.path.exists(os.path.join(MODEL_DIR, "meta.json")):
                 st.warning("⚠️ NER model not found yet. Please save a correction or click 'Retrain' to initialize.")
@@ -178,14 +189,20 @@ if uploaded_file:
                     capture_output=True,
                     text=True
                 )
-                if result.returncode == 0:
-                    st.success("✅ Model trained successfully!")
-                else:
-                    st.error("❌ Auto-training failed")
-                    st.code(result.stderr)
-                    st.stop()
+                with st.expander("📦 Auto-training Output"):
+                    st.code(result.stdout)
+                    if result.returncode != 0:
+                        st.error("❌ Auto-training failed")
+                        st.code(result.stderr)
+                        st.stop()
+                st.success("✅ Model trained successfully!")
 
-            nlp = spacy.load(MODEL_DIR)
+            try:
+                nlp = spacy.load(MODEL_DIR)
+            except Exception as e:
+                st.error(f"❌ Failed to load trained model: {e}")
+                st.stop()
+
             losses = update_model_on_correction(nlp, text, corrected)
             nlp.to_disk(MODEL_DIR)
 
